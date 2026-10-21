@@ -1,20 +1,20 @@
 import type { Metadata, Viewport } from "next";
-import { Fraunces, Nunito } from "next/font/google";
+import { Newsreader, Instrument_Sans } from "next/font/google";
 import "./globals.css";
 
-const display = Fraunces({ variable: "--font-display", subsets: ["latin"] });
-const body = Nunito({ variable: "--font-body", subsets: ["latin"] });
+const display = Newsreader({ variable: "--font-display", subsets: ["latin"], style: ["normal", "italic"] });
+const ui = Instrument_Sans({ variable: "--font-ui", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Snakes & Ladders",
-  description: "Roll, climb, slide. Play Snakes & Ladders with friends in real time.",
+  title: "Dead Reckoning",
+  description: "A pirate treasure hunt for 2–5 players. Find a key, reach the chest, outwit your crew.",
 };
 
-export const viewport: Viewport = { themeColor: "#1d4a3e", width: "device-width", initialScale: 1 };
+export const viewport: Viewport = { themeColor: "#0a0f14", width: "device-width", initialScale: 1 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${display.variable} ${body.variable}`}>
+    <html lang="en" className={`${display.variable} ${ui.variable}`}>
       <body>{children}</body>
     </html>
   );

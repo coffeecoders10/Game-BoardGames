@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { MAX_PLAYERS, MIN_PLAYERS, PAWNS, type GameState } from "@/lib/rules";
-import { PawnIcon } from "./PawnIcon";
+import { MAX_PLAYERS, MIN_PLAYERS, SEATS, type GameState } from "@/lib/rules";
+import { Rules } from "./Rules";
+import { Token } from "./Token";
 import styles from "./Lobby.module.css";
 
 type Props = {
@@ -31,22 +32,19 @@ export function Lobby({ game, meId, hostId, onStart, onLeave }: Props) {
 
   return (
     <section className={styles.wrap} aria-labelledby="lobby-title">
-      <h2 id="lobby-title" className={styles.kicker}>Table code</h2>
-      <div className={styles.code} aria-label={`Table code ${game.code.split("").join(" ")}`}>
-        {game.code.split("").map((ch, i) => (
-          <span key={i} style={{ animationDelay: `${i * 70}ms` }}>{ch}</span>
-        ))}
-      </div>
-      <button className="btn ghost" onClick={copy}>{copied ? "Link copied!" : "Copy invite link"}</button>
+      <h1 id="lobby-title" className={styles.title}>Crew {game.code}</h1>
+      <p className={styles.sub}>Share the code or the link. The host starts when everyone is in.</p>
+      <button className="btn ghost" onClick={copy}>{copied ? "Link copied" : "Copy invite link"}</button>
 
       <ul className={styles.seats}>
         {Array.from({ length: MAX_PLAYERS }, (_, i) => {
           const p = game.players[i];
           return p ? (
-            <li key={p.id} className={styles.seat} style={{ "--hue": PAWNS[p.color].hex } as React.CSSProperties}>
-              <PawnIcon color={p.color} size={46} />
+            <li key={p.id} className={styles.seat}>
+              <Token seat={p.color} name={p.name} size={32} />
               <span className={styles.name}>{p.name}</span>
-              <span className={styles.badges}>
+              <span className={styles.tags}>
+                <span>{SEATS[p.color].name}</span>
                 {p.id === hostId && <b>host</b>}
                 {p.id === meId && <b>you</b>}
               </span>
@@ -61,19 +59,20 @@ export function Lobby({ game, meId, hostId, onStart, onLeave }: Props) {
       </ul>
 
       {!me ? (
-        <p className={styles.hint}>This table is full, or the game already started.</p>
+        <p className={styles.hint}>This crew is full, or the voyage already started.</p>
       ) : isHost ? (
         <>
-          <button className="btn" disabled={ready < MIN_PLAYERS} onClick={onStart}>Start the game</button>
-          <p className={styles.hint}>
-            {ready < MIN_PLAYERS ? "Share the code — you need at least 2 players." : "Everyone in? Let's roll."}
-          </p>
+          <button className={`btn ${styles.start}`} disabled={ready < MIN_PLAYERS} onClick={onStart}>Start the hunt</button>
+          <p className={styles.hint}>{ready < MIN_PLAYERS ? "You need at least 2 players." : "Everyone in? Start when ready."}</p>
         </>
       ) : (
         <p className={styles.hint}>Waiting for {host?.name ?? "the host"} to start…</p>
       )}
 
-      <button className="btn ghost" onClick={onLeave}>Leave table</button>
+      <div className={styles.row}>
+        <Rules />
+        <button className="btn ghost" onClick={onLeave}>Leave crew</button>
+      </div>
     </section>
   );
 }

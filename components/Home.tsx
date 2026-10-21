@@ -1,4 +1,6 @@
-import { PawnIcon } from "./PawnIcon";
+import { SEATS } from "@/lib/rules";
+import { Rules } from "./Rules";
+import { Token } from "./Token";
 import styles from "./Home.module.css";
 
 type Props = {
@@ -11,52 +13,32 @@ type Props = {
   onJoin: () => void;
 };
 
-const TITLE = ["S", "n", "a", "k", "e", "s"];
-const TITLE2 = ["L", "a", "d", "d", "e", "r", "s"];
+const SAMPLE = ["A", "B", "C", "D", "E"];
 
 export function Home({ name, code, error, onName, onCode, onCreate, onJoin }: Props) {
   const hasName = name.trim().length > 0;
   const canJoin = hasName && code.length === 5;
   return (
     <div className={styles.box}>
-      <div className={styles.pawns} aria-hidden="true">
-        {[0, 1, 2, 3].map((c) => (
-          <span key={c} style={{ animationDelay: `${c * 0.15}s` }}><PawnIcon color={c} size={44} /></span>
-        ))}
+      <div className={styles.tokens} aria-hidden="true">
+        {SEATS.map((_, c) => <Token key={c} seat={c} name={SAMPLE[c]} size={30} />)}
       </div>
-      <h1 className={styles.title} aria-label="Snakes and Ladders">
-        <span aria-hidden="true">
-          {TITLE.map((l, i) => <i key={i} className={styles.tile} style={{ "--i": i } as React.CSSProperties}>{l}</i>)}
-        </span>
-        <span className={styles.amp} aria-hidden="true">&amp;</span>
-        <span aria-hidden="true">
-          {TITLE2.map((l, i) => <i key={i} className={styles.tile} style={{ "--i": i + 6 } as React.CSSProperties}>{l}</i>)}
-        </span>
-      </h1>
-      <p className={styles.tag}>Race to 100. Climb the ladders, dodge the snakes.</p>
+      <h1 className={styles.title}>Dead Reckoning</h1>
+      <p className={styles.tag}>A treasure hunt for two to five. Find a key, reach the chest, and keep an eye on the others.</p>
 
-      <form className={styles.card} onSubmit={(e) => { e.preventDefault(); (canJoin ? onJoin : onCreate)(); }}>
+      <form className={styles.form} onSubmit={(e) => { e.preventDefault(); (canJoin ? onJoin : onCreate)(); }}>
         <label className={styles.field}>
           <span>Your name</span>
-          <input
-            value={name}
-            onChange={(e) => onName(e.target.value)}
-            maxLength={14}
-            placeholder="e.g. Ada"
-            autoComplete="nickname"
-            enterKeyHint="go"
-          />
+          <input value={name} onChange={(e) => onName(e.target.value)} maxLength={14} placeholder="e.g. Anne" autoComplete="nickname" enterKeyHint="go" />
         </label>
 
-        <button type="button" className="btn" disabled={!hasName} onClick={onCreate}>
-          Set up a new table
-        </button>
+        <button type="button" className="btn" disabled={!hasName} onClick={onCreate}>Start a new crew</button>
 
-        <div className={styles.or}><span>or join friends</span></div>
+        <div className={styles.or}><span>or join one</span></div>
 
         <div className={styles.joinRow}>
           <label className={styles.field}>
-            <span className="srOnly">Table code</span>
+            <span className="srOnly">Crew code</span>
             <input
               className={styles.code}
               value={code}
@@ -66,7 +48,7 @@ export function Home({ name, code, error, onName, onCode, onCreate, onJoin }: Pr
               autoCapitalize="characters"
               autoComplete="off"
               spellCheck={false}
-              aria-label="Table code"
+              aria-label="Crew code"
             />
           </label>
           <button type="button" className="btn teal" disabled={!canJoin} onClick={onJoin}>Join</button>
@@ -75,9 +57,7 @@ export function Home({ name, code, error, onName, onCode, onCreate, onJoin }: Pr
         {error && <p className={styles.error} role="alert">{error}</p>}
       </form>
 
-      <p className={styles.rules}>
-        2–4 players · roll a 6 to go again · you must land exactly on 100
-      </p>
+      <Rules label="How to play" />
     </div>
   );
 }

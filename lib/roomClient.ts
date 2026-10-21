@@ -1,7 +1,7 @@
 // Multiplayer layer on top of the documented Socket.IO room API (docs/sop-socket.md).
 //
 // The server only relays messages, so one player acts as the *host*: it owns the
-// game state, rolls the dice and broadcasts the full state after each change.
+// game state, rolls the dice, validates every move and broadcasts the full state after each change.
 // Everyone else sends intents ("roll", "start", ...) and renders what the host
 // sends. If the host drops, the next player in join order takes over — every
 // client already holds the full state, so nothing is lost.
@@ -9,29 +9,38 @@
 import { io, type Socket } from "socket.io-client";
 import {
   addPlayer,
+  attack,
   backToLobby,
   createGame,
+  endTurn,
   pickHost,
   removePlayer,
-  roll,
+  rollDice,
   setPresence,
   skipOfflineTurn,
   startGame,
+  step,
+  wearEyepatch,
   type GameState,
+  type Powerup,
+  type Weapon,
 } from "./rules";
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? "https://coffeecoders.cc/socket";
 const SOCKET_PATH = process.env.NEXT_PUBLIC_SOCKET_PATH ?? "/flask_api/socket.io";
-const ROOM_PREFIX = "snakes-ladders:";
+const ROOM_PREFIX = "dead-reckoning:";
 
 const HELLO_EVERY_MS = 1500;
 const SYNC_TIMEOUT_MS = 7000;
 const OFFLINE_TURN_GRACE_MS = 6000;
 
-type Wire =
-  | { t: "hello" }
-  | { t: "state"; s: GameState }
-  | { t: "roll" | "start" | "again" | "bye" };
+/** What a player asks the host to do. The host validates every one against the rules. */
+export type Intent =
+  | { t: "roll" | "start" | "again" | "bye" | "end" }
+  | { t: "step"; to: number }
+  | { t: "use"; item: Powerup; target?: string };
+
+type Wire = { t: "hello" } | { t: "state"; s: GameState } | Intent;
 
 export type Snapshot = {
   status: "idle" | "joining" | "in" | "error";
@@ -92,13 +101,22 @@ export class RoomClient {
   }
 
   roll() {
-    this.intent("roll");
+    this.intent({ t: "roll" });
+  }
+  step(to: number) {
+    this.intent({ t: "step", to });
+  }
+  use(item: Powerup, target?: string) {
+    this.intent({ t: "use", item, target });
+  }
+  endTurn() {
+    this.intent({ t: "end" });
   }
   start() {
-    this.intent("start");
+    this.intent({ t: "start" });
   }
   playAgain() {
-    this.intent("again");
+    this.intent({ t: "again" });
   }
 
   leave() {
@@ -162,7 +180,7 @@ export class RoomClient {
         this.synced = true; // nobody answered: we are the only one left
         this.afterChange();
       } else {
-        this.fail("We couldn't find a table with that code.");
+        this.fail("We couldn't find a crew with that code.");
       }
     }, SYNC_TIMEOUT_MS);
   }
@@ -196,7 +214,7 @@ export class RoomClient {
     if (!m) return;
     const { name, id } = decodeUser(m[1]);
     if (id === this.me.id) return;
-    this.notice(m[2] === "joined room" ? `${name} sat down` : `${name} lost connection`);
+    this.notice(m[2] === "joined room" ? `${name} came aboard` : `${name} lost connection`);
   }
 
   private onMessage(from: { name: string; id: string }, msg: Wire) {
@@ -213,15 +231,30 @@ export class RoomClient {
         }
         return;
       default:
-        if (this.game && this.synced && this.isHost()) this.handleIntent(msg.t, from.id);
+        if (this.game && this.synced && this.isHost()) this.handleIntent(msg, from.id);
     }
   }
 
-  private handleIntent(kind: "roll" | "start" | "again" | "bye", from: string) {
+  private handleIntent(msg: Intent, from: string) {
     const g = this.game!;
-    switch (kind) {
+    switch (msg.t) {
       case "roll":
-        if (g.turn === from) this.commit(roll(g, from, 1 + Math.floor(Math.random() * 6)));
+        this.commit(rollDice(g, from, 1 + Math.floor(Math.random() * 6)));
+        break;
+      case "step":
+        if (Number.isInteger(msg.to)) this.commit(step(g, from, msg.to));
+        break;
+      case "use":
+        this.commit(
+          msg.item === "eyepatch"
+            ? wearEyepatch(g, from)
+            : typeof msg.target === "string"
+              ? attack(g, from, msg.item as Weapon, msg.target)
+              : g,
+        );
+        break;
+      case "end":
+        this.commit(endTurn(g, from));
         break;
       case "start":
         if (from === this.me.id) this.commit(startGame(g));
@@ -244,7 +277,7 @@ export class RoomClient {
     this.stopSync();
     if (this.status() !== "in") this.set({ status: "in" });
     const after = s.players.find((p) => p.id === this.me.id);
-    if (before && !after && s.phase === "lobby") this.notice("The table was reset");
+    if (before && !after && s.phase === "lobby") this.notice("The crew was reset");
     this.afterChange();
   }
 
@@ -275,10 +308,10 @@ export class RoomClient {
     }, OFFLINE_TURN_GRACE_MS);
   }
 
-  private intent(kind: "roll" | "start" | "again") {
+  private intent(msg: Intent) {
     if (!this.game) return;
-    if (this.isHost() && this.synced) this.handleIntent(kind, this.me.id);
-    else this.send({ t: kind });
+    if (this.isHost() && this.synced) this.handleIntent(msg, this.me.id);
+    else this.send(msg);
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────

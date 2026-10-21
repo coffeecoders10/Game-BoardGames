@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { RoomClient } from "@/lib/roomClient";
+import { ChartBackdrop } from "./ChartBackdrop";
 import { Home } from "./Home";
 import { Lobby } from "./Lobby";
 import { Table } from "./Table";
@@ -17,8 +18,8 @@ const cleanCode = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "").slice
 /** One id per browser tab, so a refresh reconnects as the same player. */
 function playerId() {
   try {
-    let id = sessionStorage.getItem("sl:id");
-    if (!id) sessionStorage.setItem("sl:id", (id = randomString("abcdefghjkmnpqrstuvwxyz23456789", 6)));
+    let id = sessionStorage.getItem("dr:id");
+    if (!id) sessionStorage.setItem("dr:id", (id = randomString("abcdefghjkmnpqrstuvwxyz23456789", 6)));
     return id;
   } catch {
     return randomString("abcdefghjkmnpqrstuvwxyz23456789", 6);
@@ -43,7 +44,7 @@ export function Game() {
     const c = mode === "create" ? randomString(CODE_CHARS, 5) : cleanCode(rawCode);
     if (!n || c.length < 5) return;
     try {
-      localStorage.setItem("sl:name", n);
+      localStorage.setItem("dr:name", n);
     } catch {}
     setUrlRoom(c);
     if (mode === "create") client.create(c, n, playerId());
@@ -54,7 +55,7 @@ export function Game() {
   useEffect(() => {
     let saved = "";
     try {
-      saved = localStorage.getItem("sl:name") ?? "";
+      saved = localStorage.getItem("dr:name") ?? "";
     } catch {}
     const room = cleanCode(new URLSearchParams(window.location.search).get("room") ?? "");
     setName(saved); // eslint-disable-line react-hooks/set-state-in-effect
@@ -83,6 +84,9 @@ export function Game() {
           hostId={snap.hostId}
           connected={snap.connected}
           onRoll={() => client.roll()}
+          onStep={(to) => client.step(to)}
+          onUse={(item, target) => client.use(item, target)}
+          onEnd={() => client.endTurn()}
           onAgain={() => client.playAgain()}
           onLeave={leave}
         />
@@ -91,7 +95,7 @@ export function Game() {
     view = (
       <div className={styles.center}>
         <div className={styles.spinner} aria-hidden="true" />
-        <p className={styles.msg}>Pulling up a chair…</p>
+        <p className={styles.msg}>Finding your crew…</p>
         <button className="btn ghost" onClick={leave}>Cancel</button>
       </div>
     );
@@ -111,6 +115,7 @@ export function Game() {
 
   return (
     <main className={styles.root}>
+      {!(snap.status === "in" && game?.phase === "playing") && <ChartBackdrop />}
       {!snap.connected && snap.status !== "idle" && (
         <div className={styles.banner} role="status">Connection lost — reconnecting…</div>
       )}

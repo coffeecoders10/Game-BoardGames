@@ -1,46 +1,71 @@
 // Pure game rules. Every function takes a GameState and returns a new one
-// (or the same object when nothing changed). Only the room host runs these;
-// everyone else just renders the state the host broadcasts.
+// (or the same object when nothing changed). Only the room host runs these and
+// validates every intent; everyone else just renders the state the host broadcasts.
+//
+// Tunable gameplay numbers live at the top of this file.
 
-export const BOARD_SIZE = 100;
-export const MAX_PLAYERS = 4;
+import { HARBOURS, SPAWNS, TILE_COUNT, dist, isLand, neighbours } from "./map";
+
+export const MAX_PLAYERS = 5;
 export const MIN_PLAYERS = 2;
 
-export const LADDERS: Record<number, number> = {
-  2: 38, 7: 14, 8: 31, 15: 26, 21: 42, 28: 84, 36: 44, 51: 67, 71: 91, 78: 98, 87: 94,
-};
-export const SNAKES: Record<number, number> = {
-  16: 6, 46: 25, 49: 11, 62: 19, 64: 60, 74: 53, 89: 68, 92: 88, 95: 75, 99: 80,
-};
+export type Weapon = "sword" | "pistol" | "cannon";
+export type Powerup = Weapon | "eyepatch";
+export type ItemKind = Powerup | "key";
 
-export const PAWNS = [
-  { name: "Tomato", hex: "#e4572e", dark: "#9c3416" },
-  { name: "Teal", hex: "#1b9aaa", dark: "#0c5e69" },
-  { name: "Mustard", hex: "#f2b134", dark: "#a8760a" },
-  { name: "Plum", hex: "#8e5aa8", dark: "#5a2f73" },
+/** Tile radius each weapon reaches (diagonals count as 1). */
+export const RANGE: Record<Weapon, number> = { sword: 1, pistol: 2, cannon: 4 };
+/** Uses a freshly found item gives. Eyepatch charges are discounted steps. */
+export const CHARGES: Record<Powerup, number> = { sword: 3, pistol: 3, cannon: 2, eyepatch: 6 };
+/** Powerups scattered at game start. */
+const POWERUP_SPAWNS: Powerup[] = [
+  ...Array<Powerup>(5).fill("sword"),
+  ...Array<Powerup>(4).fill("pistol"),
+  ...Array<Powerup>(3).fill("cannon"),
+  ...Array<Powerup>(5).fill("eyepatch"),
+];
+/** Movement points spent by activating any powerup. */
+export const USE_COST = 1;
+
+/** One seat per player. The shape makes tokens readable without relying on colour alone. */
+export const SEATS = [
+  { name: "Crimson", hex: "#e5534b", shape: "circle" },
+  { name: "Cobalt", hex: "#5b9bf0", shape: "square" },
+  { name: "Jade", hex: "#52b788", shape: "diamond" },
+  { name: "Violet", hex: "#a78bfa", shape: "triangle" },
+  { name: "Amber", hex: "#f59e42", shape: "hexagon" },
 ] as const;
 
 export type Phase = "lobby" | "playing" | "finished";
+export type Inventory = Record<Powerup, number>;
 
 export type Player = {
   id: string;
   name: string;
-  color: number; // index into PAWNS
-  pos: number; // 0 = not yet on the board
+  color: number; // index into SEATS; also the spawn seat
+  pos: number;
   online: boolean;
   left: boolean; // quit mid-game; skipped forever
+  ship: boolean;
+  keys: number;
+  inv: Inventory;
+  eyepatchOn: boolean; // eyepatch put on: halves step costs until its charges run out
+  kills: number;
 };
 
-export type Move = {
-  seq: number;
-  pid: string;
-  dice: number;
-  from: number;
-  landed: number; // square after the dice, before any snake/ladder
-  to: number; // final square
-  jump: "ladder" | "snake" | null;
-  overshoot: boolean; // roll too high to finish; stays put
-  bonus: boolean; // rolled a 6, goes again
+export type Item = { pos: number; kind: ItemKind };
+
+export type LogKind = "roll" | "pickup" | "ship" | "attack" | "eyepatch" | "locked" | "stuck" | "info" | "win";
+export type LogEntry = {
+  n: number;
+  kind: LogKind;
+  text: string;
+  pid?: string;
+  /** For attacks: the weapon used, who was hit and where. */
+  weapon?: Weapon;
+  target?: string;
+  from?: number;
+  at?: number;
 };
 
 export type GameState = {
@@ -49,25 +74,39 @@ export type GameState = {
   phase: Phase;
   players: Player[];
   turn: string; // player id
-  seq: number; // rolls so far
-  move: Move | null; // the most recent roll
+  stage: "roll" | "move"; // waiting for the die, or spending movement points
+  dice: number | null; // last roll
+  rolls: number; // total rolls so far (drives the dice animation)
+  mp: number; // movement points left this turn
+  moved: boolean; // took a step this turn
+  chest: number;
+  items: Item[];
+  log: LogEntry[]; // newest last
+  n: number; // log counter
   winner: string | null;
 };
 
+export type Rng = () => number;
+
+const emptyInv = (): Inventory => ({ sword: 0, pistol: 0, cannon: 0, eyepatch: 0 });
+
+const newPlayer = (id: string, name: string, color: number): Player => ({
+  id, name, color, pos: SPAWNS[color], online: true, left: false,
+  ship: false, keys: 0, inv: emptyInv(), eyepatchOn: false, kills: 0,
+});
+
 export function createGame(code: string, id: string, name: string): GameState {
   return {
-    v: 1,
-    code,
-    phase: "lobby",
-    players: [{ id, name, color: 0, pos: 0, online: true, left: false }],
-    turn: id,
-    seq: 0,
-    move: null,
-    winner: null,
+    v: 1, code, phase: "lobby", players: [newPlayer(id, name, 0)], turn: id, stage: "roll",
+    dice: null, rolls: 0, mp: 0, moved: false, chest: -1, items: [], log: [], n: 0, winner: null,
   };
 }
 
 export const isActive = (p: Player) => !p.left;
+const byId = (s: GameState, id: string) => s.players.find((p) => p.id === id);
+const pick = <T,>(arr: T[], rng: Rng) => arr[Math.floor(rng() * arr.length)];
+
+// ── lobby ───────────────────────────────────────────────────────────────────
 
 /** The host is the first player (in join order) who is still here. */
 export function pickHost(s: GameState, present: ReadonlySet<string>): string | null {
@@ -75,48 +114,72 @@ export function pickHost(s: GameState, present: ReadonlySet<string>): string | n
 }
 
 export function addPlayer(s: GameState, id: string, name: string): GameState {
-  const existing = s.players.find((p) => p.id === id);
+  const existing = byId(s, id);
   if (existing) {
     if (existing.left || (existing.online && existing.name === name)) return s;
-    return {
-      ...s,
-      players: s.players.map((p) => (p.id === id ? { ...p, online: true, name } : p)),
-    };
+    return { ...s, players: s.players.map((p) => (p.id === id ? { ...p, online: true, name } : p)) };
   }
   if (s.phase !== "lobby" || s.players.length >= MAX_PLAYERS) return s;
   const taken = new Set(s.players.map((p) => p.color));
-  const color = PAWNS.findIndex((_, i) => !taken.has(i));
-  return { ...s, players: [...s.players, { id, name, color, pos: 0, online: true, left: false }] };
+  const color = SEATS.findIndex((_, i) => !taken.has(i));
+  return { ...s, players: [...s.players, newPlayer(id, name, color)] };
 }
 
 /** Sync `online` flags with who is really in the socket room. */
 export function setPresence(s: GameState, present: ReadonlySet<string>): GameState {
-  let players = s.players.map((p) =>
-    p.online === present.has(p.id) ? p : { ...p, online: present.has(p.id) },
-  );
+  let players = s.players.map((p) => (p.online === present.has(p.id) ? p : { ...p, online: present.has(p.id) }));
   if (s.phase === "lobby") players = players.filter((p) => p.online);
   const unchanged = players.length === s.players.length && players.every((p, i) => p === s.players[i]);
   return unchanged ? s : { ...s, players };
 }
 
-export function startGame(s: GameState): GameState {
+/** Land tiles nothing sits on: no spawn, harbour, item or chest. */
+function freeLand(s: Pick<GameState, "items" | "chest">): number[] {
+  const used = new Set([...SPAWNS, ...HARBOURS, s.chest, ...s.items.map((i) => i.pos)]);
+  return Array.from({ length: TILE_COUNT }, (_, i) => i).filter((i) => isLand(i) && !used.has(i));
+}
+
+export function startGame(s: GameState, rng: Rng = Math.random): GameState {
   const ready = s.players.filter((p) => p.online);
   if (s.phase !== "lobby" || ready.length < MIN_PLAYERS) return s;
+
+  const players = ready.map((p) => newPlayer(p.id, p.name, p.color));
+  // The chest goes on land, away from the harbours, as far from the starting spawns as the map allows
+  // (tries 8 tiles away, then closer) so nobody starts next to it.
+  const spawns = players.map((p) => p.pos);
+  const candidates = Array.from({ length: TILE_COUNT }, (_, i) => i).filter(
+    (i) => isLand(i) && !HARBOURS.includes(i) && !SPAWNS.includes(i),
+  );
+  const tier = [8, 7, 6, 5, 4, 3, 2, 1].find((d) => candidates.some((i) => spawns.every((sp) => dist(sp, i) >= d))) ?? 0;
+  const far = candidates.filter((i) => spawns.every((sp) => dist(sp, i) >= tier));
+  const chest = pick(far, rng);
+
+  const board: Pick<GameState, "items" | "chest"> = { chest, items: [] };
+  const kinds: ItemKind[] = [...Array<ItemKind>(players.length - 1).fill("key"), ...POWERUP_SPAWNS];
+  for (const kind of kinds) {
+    const spot = pick(freeLand(board), rng);
+    board.items = [...board.items, { pos: spot, kind }];
+  }
   return {
-    ...s,
-    phase: "playing",
-    players: ready.map((p) => ({ ...p, pos: 0 })),
-    turn: ready[0].id,
-    seq: 0,
-    move: null,
-    winner: null,
+    ...s, phase: "playing", players, turn: players[0].id, stage: "roll", dice: null, rolls: 0, mp: 0,
+    moved: false, chest, items: board.items, log: [], n: 0, winner: null,
   };
 }
 
 export function backToLobby(s: GameState): GameState {
   if (s.phase !== "finished") return s;
-  const players = s.players.filter((p) => isActive(p) && p.online).map((p) => ({ ...p, pos: 0 }));
-  return { ...s, phase: "lobby", players, move: null, winner: null, seq: 0, turn: players[0]?.id ?? s.turn };
+  const players = s.players.filter((p) => isActive(p) && p.online).map((p) => newPlayer(p.id, p.name, p.color));
+  return {
+    ...s, phase: "lobby", players, turn: players[0]?.id ?? s.turn, stage: "roll", dice: null, mp: 0,
+    chest: -1, items: [], log: [], winner: null,
+  };
+}
+
+// ── turn flow ───────────────────────────────────────────────────────────────
+
+function say(s: GameState, e: Omit<LogEntry, "n">): GameState {
+  const n = s.n + 1;
+  return { ...s, n, log: [...s.log, { ...e, n }].slice(-8) };
 }
 
 /** Next player after the current one who is here (falls back to the current one). */
@@ -130,46 +193,176 @@ function nextTurnId(s: GameState): string {
   return s.turn;
 }
 
+const passTurn = (s: GameState): GameState => ({
+  ...s, turn: nextTurnId(s), stage: "roll", mp: 0, moved: false,
+});
+
 export function skipOfflineTurn(s: GameState): GameState {
-  if (s.phase !== "playing") return s;
-  if (s.players.find((p) => p.id === s.turn)?.online) return s;
-  const turn = nextTurnId(s);
-  return turn === s.turn ? s : { ...s, turn };
+  if (s.phase !== "playing" || byId(s, s.turn)?.online) return s;
+  const next = passTurn(s);
+  return next.turn === s.turn ? s : next;
 }
 
-export function roll(s: GameState, pid: string, dice: number): GameState {
-  const player = s.players.find((p) => p.id === pid);
-  if (s.phase !== "playing" || s.turn !== pid || !player) return s;
+// ── movement ────────────────────────────────────────────────────────────────
 
-  const target = player.pos + dice;
-  const overshoot = target > BOARD_SIZE;
-  const landed = overshoot ? player.pos : target;
-  const to = LADDERS[landed] ?? SNAKES[landed] ?? landed;
-  const jump = to > landed ? "ladder" : to < landed ? "snake" : null;
-  const won = to === BOARD_SIZE;
-  const bonus = dice === 6 && !won;
+/** Cost of stepping onto `to`. Water is 2 without a ship, 1 with; the eyepatch halves it. */
+export function stepCost(p: Player, to: number): number {
+  const base = isLand(to) ? 1 : p.ship ? 1 : 2;
+  return p.eyepatchOn && p.inv.eyepatch > 0 ? base / 2 : base;
+}
 
-  const move: Move = { seq: s.seq + 1, pid, dice, from: player.pos, landed, to, jump, overshoot, bonus };
-  const next: GameState = {
-    ...s,
-    seq: move.seq,
-    move,
-    players: s.players.map((p) => (p.id === pid ? { ...p, pos: to } : p)),
+/** Tiles the active player can step to right now, with their cost. */
+export function legalSteps(s: GameState, p: Player): { to: number; cost: number }[] {
+  if (s.phase !== "playing" || s.turn !== p.id || s.stage !== "move") return [];
+  return neighbours(p.pos)
+    .map((to) => ({ to, cost: stepCost(p, to) }))
+    // The first step of a turn is always allowed, so a bad roll never strands a swimmer.
+    .filter(({ cost }) => cost <= s.mp || !s.moved);
+}
+
+export const canUse = (s: GameState, p: Player, item: Powerup) =>
+  s.phase === "playing" && s.turn === p.id && s.stage === "move" && s.mp >= USE_COST &&
+  p.inv[item] > 0 && !(item === "eyepatch" && p.eyepatchOn);
+
+export const targetsFor = (s: GameState, p: Player, w: Weapon) =>
+  s.players.filter((o) => o.id !== p.id && isActive(o) && dist(o.pos, p.pos) <= RANGE[w]);
+
+/** Anything left to do this turn? If not, the turn ends by itself. */
+function hasMoves(s: GameState): boolean {
+  const p = byId(s, s.turn);
+  if (!p) return false;
+  if (legalSteps(s, p).length) return true;
+  return (["sword", "pistol", "cannon"] as const).some((w) => canUse(s, p, w) && targetsFor(s, p, w).length) ||
+    canUse(s, p, "eyepatch");
+}
+
+/** Close the turn when nothing more can be done. */
+function settle(s: GameState): GameState {
+  if (s.phase !== "playing" || s.stage !== "move" || hasMoves(s)) return s;
+  const who = byId(s, s.turn)?.name ?? "";
+  return passTurn(say(s, { kind: "info", pid: s.turn, text: `${who} has no moves left` }));
+}
+
+export function rollDice(s: GameState, pid: string, dice: number): GameState {
+  const p = byId(s, pid);
+  if (s.phase !== "playing" || s.turn !== pid || s.stage !== "roll" || !p) return s;
+  const rolled: GameState = { ...s, stage: "move", dice, rolls: s.rolls + 1, mp: dice, moved: false };
+  return settle(say(rolled, { kind: "roll", pid, text: `${p.name} rolled a ${dice}` }));
+}
+
+export function endTurn(s: GameState, pid: string): GameState {
+  if (s.phase !== "playing" || s.turn !== pid || s.stage !== "move") return s;
+  return passTurn(s);
+}
+
+export function step(s: GameState, pid: string, to: number): GameState {
+  const p = byId(s, pid);
+  const move = p && legalSteps(s, p).find((m) => m.to === to);
+  if (!p || !move) return s;
+
+  let next: GameState = {
+    ...s, moved: true, mp: Math.max(0, s.mp - move.cost),
+    players: s.players.map((q) =>
+      q.id === pid ? { ...q, pos: to, inv: spendEyepatch(q) } : q),
   };
-  if (won) return { ...next, phase: "finished", winner: pid };
-  return bonus ? next : { ...next, turn: nextTurnId(next) };
+  next = arrive(next, pid);
+  return settle(next.phase === "playing" && next.mp <= 0 ? passTurn(next) : next);
 }
+
+/** Each discounted step uses one eyepatch charge. */
+function spendEyepatch(p: Player): Inventory {
+  if (!p.eyepatchOn || p.inv.eyepatch <= 0) return p.inv;
+  return { ...p.inv, eyepatch: p.inv.eyepatch - 1 };
+}
+
+/** Everything that happens when a pirate walks onto a tile (also when only passing through). */
+function arrive(s: GameState, pid: string): GameState {
+  let p = byId(s, pid)!;
+  const here = s.items.filter((i) => i.pos === p.pos);
+  let next = s;
+
+  if (p.eyepatchOn && p.inv.eyepatch <= 0) {
+    p = { ...p, eyepatchOn: false };
+    next = { ...next, players: next.players.map((q) => (q.id === pid ? p : q)) };
+    next = say(next, { kind: "eyepatch", pid, text: `${p.name}'s eyepatch wore out` });
+  }
+
+  for (const item of here) {
+    if (item.kind === "key") p = { ...p, keys: p.keys + 1 };
+    else p = { ...p, inv: { ...p.inv, [item.kind]: p.inv[item.kind] + CHARGES[item.kind] } };
+    next = say(next, { kind: "pickup", pid, at: item.pos, text: `${p.name} found ${item.kind === "key" ? "a key" : `a ${item.kind}`}` });
+  }
+  if (HARBOURS.includes(p.pos) && !p.ship) {
+    p = { ...p, ship: true };
+    next = say(next, { kind: "ship", pid, at: p.pos, text: `${p.name} boarded a ship` });
+  }
+  next = {
+    ...next,
+    items: here.length ? next.items.filter((i) => i.pos !== p.pos) : next.items,
+    players: next.players.map((q) => (q.id === pid ? p : q)),
+  };
+
+  if (p.pos === next.chest) {
+    if (p.keys > 0) {
+      return say({ ...next, phase: "finished", winner: pid }, { kind: "win", pid, at: p.pos, text: `${p.name} opened the treasure chest!` });
+    }
+    next = say(next, { kind: "locked", pid, at: p.pos, text: `${p.name} found the chest — it's locked. Bring a key!` });
+  }
+  return next;
+}
+
+// ── items & combat ──────────────────────────────────────────────────────────
+
+export function wearEyepatch(s: GameState, pid: string): GameState {
+  const p = byId(s, pid);
+  if (!p || !canUse(s, p, "eyepatch")) return s;
+  const next: GameState = {
+    ...s, mp: s.mp - USE_COST,
+    players: s.players.map((q) => (q.id === pid ? { ...q, eyepatchOn: true } : q)),
+  };
+  return settle(say(next, { kind: "eyepatch", pid, text: `${p.name} put on the eyepatch — moves cost half` }));
+}
+
+export function attack(s: GameState, pid: string, weapon: Weapon, targetId: string): GameState {
+  const p = byId(s, pid);
+  const t = byId(s, targetId);
+  if (!p || !t || !(weapon in RANGE) || !canUse(s, p, weapon)) return s;
+  if (!targetsFor(s, p, weapon).some((o) => o.id === targetId)) return s;
+
+  // The victim loses everything and wakes up at their spawn. Any keys they carried drop
+  // where they fell, land or sea, so the key count stays N-1.
+  const drops: Item[] = Array.from({ length: t.keys }, () => ({ pos: t.pos, kind: "key" }));
+  const players = s.players.map((q) => {
+    if (q.id === targetId) return { ...newPlayer(q.id, q.name, q.color), online: q.online, kills: q.kills };
+    if (q.id === pid) return { ...q, inv: { ...q.inv, [weapon]: q.inv[weapon] - 1 }, kills: q.kills + 1 };
+    return q;
+  });
+  const next: GameState = { ...s, mp: s.mp - USE_COST, players, items: [...s.items, ...drops] };
+  return settle(say(next, {
+    kind: "attack", pid, weapon, target: targetId, from: p.pos, at: t.pos,
+    text: `${p.name} ${weapon === "cannon" ? "blasted" : weapon === "pistol" ? "shot" : "cut down"} ${t.name}` +
+      (t.keys ? " — the key dropped!" : "!"),
+  }));
+}
+
+// ── leaving ─────────────────────────────────────────────────────────────────
 
 /** Someone quit on purpose. */
 export function removePlayer(s: GameState, id: string): GameState {
-  if (!s.players.some((p) => p.id === id)) return s;
+  const gone = byId(s, id);
+  if (!gone) return s;
   if (s.phase === "lobby") return { ...s, players: s.players.filter((p) => p.id !== id) };
 
-  let next: GameState = { ...s, players: s.players.map((p) => (p.id === id ? { ...p, left: true } : p)) };
+  // Keys they carried drop where they stood.
+  const drops: Item[] = Array.from({ length: gone.keys }, () => ({ pos: gone.pos, kind: "key" }));
+  let next: GameState = {
+    ...s, items: [...s.items, ...drops],
+    players: s.players.map((p) => (p.id === id ? { ...p, left: true, keys: 0 } : p)),
+  };
   if (next.phase === "playing") {
     const remaining = next.players.filter(isActive);
     if (remaining.length <= 1) return { ...next, phase: "finished", winner: remaining[0]?.id ?? null };
-    if (next.turn === id) next = { ...next, turn: nextTurnId(next) };
+    if (next.turn === id) next = passTurn(next);
   }
   return next;
 }
